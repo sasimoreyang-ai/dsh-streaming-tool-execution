@@ -27,9 +27,12 @@ and the build-time checks are maintained in MindAgent-Platform.
 The full MIT license text follows so the required copyright and permission
 notice travel with the package; the standalone LICENSE file is not shipped.
 
+The local modifications listed above are Copyright (c) 2026 sasimoreyang-ai.
+
 MIT License
 
 Copyright (c) 2026 Te-ddybear
+Modifications Copyright (c) 2026 sasimoreyang-ai
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

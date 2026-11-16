@@ -15,6 +15,7 @@
     "tools"
   ],
   "license": "MIT",
+  "author": "sasimoreyang-ai",
   "peerDependencies": {
     "@deepseek-ai/dsh": "0.2.0-rc.2"
   },
