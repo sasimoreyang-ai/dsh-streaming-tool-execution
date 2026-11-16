@@ -1,0 +1,39 @@
+Streaming tool execution for DSH 0.2.0-rc.2
+
+This source is vendored from @teddybear/dsh-streaming-tool-execution 0.2.0-rc.2
+(MIT, Copyright (c) 2026 Te-ddybear).
+
+It is a plugin port of the agent-loop change
+"feat(agent-loop): execute parallel-safe tool calls while streaming":
+Te-ddybear/deepseek-harness@de079108d2dcbef687ab6457b2bb7987fb67d292
+
+The platform-local package is named mindagent-dsh-streaming-tool-execution.
+Local packaging changes only: the package name, a repository field, and adding
+this NOTICE to the `files` list so provenance travels with the packed tarball.
+The runtime code is not modified. Installation into the image and the build-time
+checks are maintained in MindAgent-Platform.
+
+The full MIT license text follows so the required copyright and permission
+notice travel with the package; the standalone LICENSE file is not shipped.
+
+MIT License
+
+Copyright (c) 2026 Te-ddybear
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

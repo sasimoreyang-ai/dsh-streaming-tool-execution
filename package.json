@@ -1,0 +1,40 @@
+{
+  "name": "mindagent-dsh-streaming-tool-execution",
+  "version": "0.2.0-rc.2",
+  "description": "Starts parallel-safe tool calls as soon as their model block closes, overlapping tool execution with the rest of the model stream (DSH 0.2.0-rc.2).",
+  "repository": {
+    "type": "git",
+    "url": "https://gitcode.com/Ascend/MindAgent-Platform.git",
+    "directory": "MindAgent-Exec/agents/dsh-build/plugin-streaming-tool-execution"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "agent-loop",
+    "streaming",
+    "tools"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "README.md",
+    "README.zh.md",
+    "NOTICE"
+  ],
+  "engines": {
+    "dsh": "0.2.0-rc.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

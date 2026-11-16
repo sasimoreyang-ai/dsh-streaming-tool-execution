@@ -1,0 +1,10 @@
+# Streaming tool execution for DSH 0.2.0-rc.2.
+#
+# The row starts parallel-safe tool calls while the assistant stream is still
+# open. Set `streamingToolExecution: false` to fall back to the stock behavior
+# without removing the bundle.
+- insert:
+    - id: streaming-tool-execution
+      name: 'mindagent-dsh-streaming-tool-execution'
+      config:
+        streamingToolExecution: true
