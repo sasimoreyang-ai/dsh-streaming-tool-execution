@@ -10,15 +10,20 @@
 本插件是 agent-loop 变更
 `feat(agent-loop): execute parallel-safe tool calls while streaming`
 （`Te-ddybear/deepseek-harness@de079108d2dcbef687ab6457b2bb7987fb67d292`）的插件化移植，面向
-0.2.0-rc.2 运行时，不修改随包发布的包。
+0.2.0-rc.2 运行时。
+
+> 本地改动：本副本不 import 任何 host 包，因此可以从 profile 安装直接加载；与上游的差异见
+> `NOTICE`。
 
 ## 兼容性
 
 - **仅支持 DSH 0.2.0-rc.2。** 插件包装 0.2.0-rc.2 `dsh-agent-loop` 内部
   `TOOL_RUNTIME_SCHEDULER` 分阶段工具流水线的 `prepare` / `dispatch`。DSH 0.2.1 及之后把
-  工具批次迁移到 `ToolExecutor` API，因此插件不会在这些版本激活；请勿把这些 profile 配进来。
-- 无运行时依赖；只引用 DSH 随包发布的 `@deepseek-ai/dsh-tools` 与
-  `@deepseek-ai/schemastery`。
+  工具批次迁移到 `ToolExecutor` API，因此插件在这些版本上激活即报错；请勿把这些 profile 配进来。
+- 无运行时依赖，也不 import 任何 host 包：调度器符号在 `tools` 服务上按描述
+  `@deepseek-ai/dsh-tools.scheduler` 查找，因此装进 profile 的副本无需安装锚点即可加载。
+  `peerDependencies` 已把 `@deepseek-ai/dsh` 钉在 `0.2.0-rc.2`，版本不符时 DSH 会拒绝安装，
+  除非显式 `dsh plugin allow-version … --accept-risk` 放行。
 
 ## 行为
 
@@ -42,15 +47,16 @@
 插件行。
 
 1. 将目录放到目标机器（复制，或使用 `npm pack` 打包）。
-2. 通过 profile 的插件管理器安装：使用 `plugin_manager` 的 `install_bundle`，`target` 填
-   bundle 目录的绝对路径（Web UI 的插件页面执行同样的操作），或使用 0.2.0-rc.2 profile
-   上等价的安装器。安装器会把包复制进 profile 并选中它的 bundle。
+2. 装进 profile：`dsh plugin --profile <profile> add <tarball 或 bundle 目录绝对路径>`，
+   或 Web UI 插件页的 `plugin_manager`（`action: install_bundle`）。安装器会把包复制进
+   profile 并选中它的 bundle。
    手动等价做法：把包装进 profile，并把 `mindagent-dsh-streaming-tool-execution` 追加到
    profile `package.json` 的 `dsh.profile.bundles`。
 3. 插入的行默认以 `streamingToolExecution: true` 启用；插件在 `tools` 与 `agentLoop`
    就绪后激活。
 
-MindAgent 镜像在构建期完成上述 1-3 步，运行期不再安装。
+不需要再往 DSH 安装目录里装第二份。MindAgent 镜像仍会把它同时装进 DSH 安装作用域，那是构建期
+的便利做法，不是加载前提。
 
 ## 配置
 
@@ -66,7 +72,7 @@ MindAgent 镜像在构建期完成上述 1-3 步，运行期不再安装。
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
-| `streamingToolExecution` | `false` | 在模型流打开时启动并行安全调用。Volatile：在 profile patch 中切换无需重新挂载。 |
+| `streamingToolExecution` | `false` | 在模型流打开时启动并行安全调用。按普通布尔值读取：不经 schema 校验，切换后需重新加载 profile。 |
 
 若要在不移除 bundle 的情况下关闭行为，在 profile 的 `cordis.patch.yml` 覆盖该行：
 
@@ -89,16 +95,20 @@ MindAgent 镜像在构建期完成上述 1-3 步，运行期不再安装。
 - 失败尝试会放弃其执行体，重试可正常完成；
 - `tools/pre-execute`、`tools/execute`、`tools/post-execute`、`tools/result` 每次调用各运行一次；
 - 卸载插件会恢复原始调度阶段；
-- bundle 能通过 0.2.0-rc.2 Cordis loader 加载并校验 `Config`，组合后的 0.2.0-rc.2 profile
-  能显示插入的行。
+- bundle 能通过 0.2.0-rc.2 Cordis loader 加载，组合后的 0.2.0-rc.2 profile 能显示插入的行。
+
+另在 stock `@deepseek-ai/dsh@0.2.0-rc.2` 安装上实测：`dsh plugin --profile web add` 成功，
+装进 profile 的副本在解不到任何 host 包的前提下 import 通过，脚本化调度器验证了推测启动、
+认领不重跑、卸载还原三个阶段。
 
 尚未在 0.2.0-rc.2 浏览器会话中对插件清单卡片做视觉验证；标题与描述均已提供。本包
 不提供图标，插件清单界面预期使用其默认图标。
 
 ## 限制
 
-- 插件修改内部 `TOOL_RUNTIME_SCHEDULER` 符号导出的调度对象。卸载时会恢复原始方法，但未来
-  0.2.0-rc.2 重建若改变该内部对象可能失效。
+- 插件修改 DSH 放在内部 `TOOL_RUNTIME_SCHEDULER` 符号下的调度对象，该符号按描述
+  `@deepseek-ai/dsh-tools.scheduler` 发现。卸载时会恢复原始方法，但若重建改了符号名或该
+  内部对象，激活时会直接报错（不再静默）。
 - 并行安全分类来自每个工具的 `isConcurrencySafe`；没有按工具的白名单。
 - 假设每个 agent 同时只有一个模型步骤（agent loop 对单个 agent 是串行的）。
 - 放弃只能停止协作式工作，无法强制终止忽略 `exec.signal` 的执行体。

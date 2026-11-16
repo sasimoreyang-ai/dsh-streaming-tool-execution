@@ -14,15 +14,22 @@ This is a plugin port of the agent-loop change
 (`Te-ddybear/deepseek-harness@de079108d2dcbef687ab6457b2bb7987fb67d292`), built for the
 0.2.0-rc.2 runtime without patching the shipped packages.
 
+> Local modification: this copy imports no host package, so it loads from a
+> profile installation. See `NOTICE` for the exact difference from upstream.
+
 ## Compatibility
 
 - **DSH 0.2.0-rc.2 only.** The plugin wraps the internal
   `TOOL_RUNTIME_SCHEDULER` staged tool pipeline (`prepare` / `dispatch`) of the
   0.2.0-rc.2 `dsh-agent-loop`. DSH 0.2.1 and later moved tool batches to the
-  `ToolExecutor` API, so this plugin deliberately does not activate there; keep
-  it out of those profiles.
-- No runtime dependencies. The bundle imports only packages shipped with DSH
-  (`@deepseek-ai/dsh-tools`, `@deepseek-ai/schemastery`).
+  `ToolExecutor` API, where the pipeline this plugin wraps no longer exists, so
+  activation fails there; keep it out of those profiles.
+- No runtime dependencies and no host imports: the scheduler symbol is found by
+  its description on the `tools` service instead of importing
+  `@deepseek-ai/dsh-tools`, so a copy installed into a profile loads without a
+  package anchor. `peerDependencies` pins `@deepseek-ai/dsh` to `0.2.0-rc.2`, so
+  DSH refuses a mismatched installation unless an explicit
+  `dsh plugin allow-version … --accept-risk` exemption is granted.
 
 ## Behavior
 
@@ -55,19 +62,19 @@ The package is a DSH bundle: `package.json` declares `dsh.bundle.patch`, and
 
 1. Make the directory available to the target machine (copy it, or pack it with
    `npm pack`).
-2. Install it through the profile's plugin manager: `plugin_manager` with
-   `action: install_bundle` and the absolute bundle directory as `target` (the
-   Web UI's Plugins page performs the same operation), or the equivalent
-   installer on a 0.2.0-rc.2 profile. The installer copies the package into the
-   profile and selects its bundle.
+2. Install it into the profile: `dsh plugin --profile <profile> add <tarball or
+   absolute bundle directory>`, or `plugin_manager` with
+   `action: install_bundle` from the Web UI's Plugins page. The installer copies
+   the package into the profile and selects its bundle.
    Manual equivalent: install the package into the profile and append
    `mindagent-dsh-streaming-tool-execution` to `dsh.profile.bundles` in the
    profile's `package.json`.
 3. The inserted row is enabled with `streamingToolExecution: true`; the plugin
    activates after `tools` and `agentLoop` are available.
 
-The MindAgent image performs steps 1-3 at build time, so nothing is installed
-at runtime.
+No second installation into the DSH package is required. The MindAgent image
+additionally installs the package inside its DSH installation; that is a build
+convenience, not a load requirement.
 
 ## Configuration
 
@@ -83,7 +90,7 @@ at runtime.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `streamingToolExecution` | `false` | Start parallel-safe calls while the model stream is open. Volatile: toggling it in the profile patch takes effect without remounting. |
+| `streamingToolExecution` | `false` | Start parallel-safe calls while the model stream is open. Read as a plain boolean: not schema-validated, and toggling it needs a profile reload. |
 
 To disable the behavior without removing the bundle, override the row in the
 profile's `cordis.patch.yml`:
@@ -111,8 +118,13 @@ scripted mock adapters at the Cordis level:
 - `tools/pre-execute`, `tools/execute`, `tools/post-execute`, and `tools/result`
   each run once per call;
 - unloading the plugin restores the original scheduler stages;
-- the bundle loads through the 0.2.0-rc.2 Cordis loader with its `Config`
-  validated, and a composed 0.2.0-rc.2 profile shows the inserted row.
+- the bundle loads through the 0.2.0-rc.2 Cordis loader, and a composed
+  0.2.0-rc.2 profile shows the inserted row.
+
+Additionally verified against a stock `@deepseek-ai/dsh@0.2.0-rc.2` install:
+`dsh plugin --profile web add` succeeds, the installed copy imports with no host
+package resolvable, a scripted scheduler shows the speculative start, claiming
+the call does not re-run its body, and unloading restores the stages.
 
 The plugin row's rendered plugin-inventory card was not visually verified in a
 0.2.0-rc.2 browser session; title and description are provided. This package
@@ -120,10 +132,11 @@ intentionally ships no icon, so the inventory UI should use its default icon.
 
 ## Limits
 
-- The plugin patches the scheduler object exported under the internal
-  `TOOL_RUNTIME_SCHEDULER` symbol. It restores the original methods on unload,
-  but a future 0.2.0-rc.2 rebuild that changes that internal object can break
-  it.
+- The plugin patches the scheduler object DSH keeps under its internal
+  `TOOL_RUNTIME_SCHEDULER` symbol, found by the symbol's description
+  `@deepseek-ai/dsh-tools.scheduler`. It restores the original methods on
+  unload, but a rebuild that renames the symbol or changes that internal object
+  makes activation fail loudly.
 - Parallel-safe classification comes from each tool's `isConcurrencySafe`;
   there is no per-tool allowlist.
 - One model step per agent is assumed (the agent loop is serial per agent).

@@ -8,10 +8,21 @@ It is a plugin port of the agent-loop change
 Te-ddybear/deepseek-harness@de079108d2dcbef687ab6457b2bb7987fb67d292
 
 The platform-local package is named mindagent-dsh-streaming-tool-execution.
-Local packaging changes only: the package name, a repository field, and adding
-this NOTICE to the `files` list so provenance travels with the packed tarball.
-The runtime code is not modified. Installation into the image and the build-time
-checks are maintained in MindAgent-Platform.
+Local changes: the package name, a repository field, a `peerDependencies` entry
+pinning `@deepseek-ai/dsh` to 0.2.0-rc.2 (so DSH refuses a mismatched install
+unless an explicit risk exemption is granted), and adding this NOTICE to the
+`files` list so provenance travels with the packed tarball.
+
+One runtime change is applied on top of upstream. Upstream imports
+`@deepseek-ai/dsh-tools` and `@deepseek-ai/schemastery` by bare specifier and
+exports a schemastery `Config`. A copy installed into a profile cannot resolve
+those packages, so it failed to import with ERR_MODULE_NOT_FOUND unless it was
+also installed inside the DSH installation itself. This copy imports nothing
+from the host: it finds the scheduler symbol by its description
+`@deepseek-ai/dsh-tools.scheduler` on the `tools` service, and reads
+`streamingToolExecution` as a plain boolean instead of a schemastery schema
+(no defaulting and no volatile remount semantics). Installation into the image
+and the build-time checks are maintained in MindAgent-Platform.
 
 The full MIT license text follows so the required copyright and permission
 notice travel with the package; the standalone LICENSE file is not shipped.

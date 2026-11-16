@@ -23,23 +23,17 @@
  *
  * @module mindagent-dsh-streaming-tool-execution
  */
-import { TOOL_RUNTIME_SCHEDULER } from '@deepseek-ai/dsh-tools'
-import z from '@deepseek-ai/schemastery'
+// Local modification (not upstream): this module imports nothing from the host,
+// so a profile-installed copy never has to resolve `@deepseek-ai/dsh-tools` or
+// `@deepseek-ai/schemastery`. Importing a second copy of `dsh-tools` would also
+// create a different Symbol and never match the host's scheduler.
+const SCHEDULER_SYMBOL_DESCRIPTION = '@deepseek-ai/dsh-tools.scheduler'
 
 /** Loader row name. */
 export const name = 'streaming-tool-execution'
 
 /** Services this plugin needs before it can activate. */
 export const inject = ['tools', 'agentLoop']
-
-/** Plugin configuration. */
-export const Config = z.object({
-  /**
-   * Start parallel-safe tool calls as soon as their `tool-call` block closes.
-   * Volatile: a profile patch can toggle it without remounting the plugin.
-   */
-  streamingToolExecution: z.boolean().default(false).volatile(),
-})
 
 const ABANDON_ERROR = 'tool call abandoned with its model attempt'
 
@@ -58,9 +52,13 @@ function parseArguments(raw) {
  * @param config - resolved plugin configuration.
  */
 export function apply(ctx, config) {
-  const scheduler = ctx.tools[TOOL_RUNTIME_SCHEDULER]
-  if (scheduler === undefined) {
-    throw new Error('streaming-tool-execution requires the DSH 0.2.0-rc.2 `TOOL_RUNTIME_SCHEDULER` tool pipeline')
+  const schedulerSymbol = Object.getOwnPropertySymbols(ctx.tools)
+    .find(symbol => symbol.description === SCHEDULER_SYMBOL_DESCRIPTION)
+  const scheduler = schedulerSymbol === undefined ? undefined : ctx.tools[schedulerSymbol]
+  if (scheduler === undefined
+    || typeof scheduler.prepare !== 'function' || typeof scheduler.dispatch !== 'function') {
+    throw new Error(`streaming-tool-execution requires the DSH 0.2.0-rc.2 tool pipeline (`
+      + `symbol ${SCHEDULER_SYMBOL_DESCRIPTION}); this host does not expose it`)
   }
 
   const logger = ctx.logger('streaming-tool-execution')

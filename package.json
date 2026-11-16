@@ -15,6 +15,14 @@
     "tools"
   ],
   "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
   "type": "module",
   "main": "index.js",
   "exports": {
