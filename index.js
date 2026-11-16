@@ -1,301 +1,281 @@
 /**
- * Streaming tool execution for the DeepSeek Harness 0.2.0-rc.2.
- *
- * Port of the agent-loop change "execute parallel-safe tool calls while
- * streaming" as a profile plugin: a parallel-safe model tool call starts as
- * soon as its `tool-call` block closes in the assistant stream, instead of
- * waiting for the assistant message to settle.
- *
- * The 0.2.0-rc.2 agent loop drives its staged tool pipeline through
- * `TOOL_RUNTIME_SCHEDULER`. This plugin wraps the `prepare` and `dispatch`
- * stages of that scheduler object: blocks observed on `agent/assistant-stream`
- * are prepared and dispatched speculatively, and when the loop later prepares
- * and dispatches the same call id it reuses the already-started execution.
- * Results still commit in model order after the assistant message, through the
- * loop's own `finalize`/`finish` stages, so the durable session ordering does
- * not change and nothing is persisted before the message settles.
- *
- * Speculation is abandoned without committing a result when the attempt fails,
- * the step ends without consuming the call (for example at the output-token
- * ceiling), the turn is cancelled, or the agent becomes idle. A body that
- * already produced side effects cannot be undone: enable this only for tools
- * whose early side effects are acceptable.
- *
- * @module mindagent-dsh-streaming-tool-execution
+ * Streaming tool execution for DSH 0.2.2-rc.1.
+ * NativeToolExecutor owns a ToolExecutionPipeline in this release. We reuse
+ * its prepare/dispatch results and leave completion and durable batch logging
+ * to that executor. Host packages are deliberately resolved by the host only.
  */
-// Local modification (not upstream): this module imports nothing from the host,
-// so a profile-installed copy never has to resolve `@deepseek-ai/dsh-tools` or
-// `@deepseek-ai/schemastery`. Importing a second copy of `dsh-tools` would also
-// create a different Symbol and never match the host's scheduler.
-const SCHEDULER_SYMBOL_DESCRIPTION = '@deepseek-ai/dsh-tools.scheduler'
-
-/** Loader row name. */
 export const name = 'streaming-tool-execution'
-
-/** Services this plugin needs before it can activate. */
-export const inject = ['tools', 'agentLoop']
+export const inject = ['tools', 'agentLoop', 'llm']
 
 const ABANDON_ERROR = 'tool call abandoned with its model attempt'
+const OWNER = Symbol.for('mindagent.streaming-tool-execution.owner')
 
-/** Model arguments: invalid JSON stays text; empty input is an empty object. */
 function parseArguments(raw) {
-  try {
-    return raw ? JSON.parse(raw) : {}
-  } catch {
-    return raw
-  }
+  try { return raw ? JSON.parse(raw) : {} }
+  catch { return raw }
 }
 
-/**
- * Activate the plugin.
- * @param ctx - host context owning the tool runtime and agent loop.
- * @param config - resolved plugin configuration.
- */
+/** Install version-specific interception, owned and restored by this Cordis fiber. */
 export function apply(ctx, config) {
-  const schedulerSymbol = Object.getOwnPropertySymbols(ctx.tools)
-    .find(symbol => symbol.description === SCHEDULER_SYMBOL_DESCRIPTION)
-  const scheduler = schedulerSymbol === undefined ? undefined : ctx.tools[schedulerSymbol]
-  if (scheduler === undefined
-    || typeof scheduler.prepare !== 'function' || typeof scheduler.dispatch !== 'function') {
-    throw new Error(`streaming-tool-execution requires the DSH 0.2.0-rc.2 tool pipeline (`
-      + `symbol ${SCHEDULER_SYMBOL_DESCRIPTION}); this host does not expose it`)
+  const tools = ctx.tools
+  if (typeof tools.resolve !== 'function' || typeof tools.selectExecutor !== 'function') {
+    throw new Error('streaming-tool-execution requires DSH 0.2.2-rc.1 ToolsService and NativeToolExecutor')
   }
-
+  if (tools[OWNER]) throw new Error('streaming-tool-execution is already mounted on this tools service')
+  const owner = {}
+  tools[OWNER] = owner
   const logger = ctx.logger('streaming-tool-execution')
-  const originalPrepare = scheduler.prepare
-  const originalDispatch = scheduler.dispatch
-
-  /** Speculative executions by step, keyed by agent id. */
+  const originalResolve = tools.resolve
+  const originalExecute = tools.execute
+  const resolveDescriptor = Object.getOwnPropertyDescriptor(tools, 'resolve')
+  const executeDescriptor = Object.getOwnPropertyDescriptor(tools, 'execute')
+  const admissions = new WeakMap()
   const steps = new Map()
-  /** Unclaimed speculative executions by `agentId + callId`. */
-  const pending = new Map()
-  /** Speculative execution awaiting the loop's dispatch, keyed by its prepared exec. */
-  const preparedExecs = new WeakMap()
+  const draining = new Map()
+  const pipelines = new Map()
+  const batches = new Set()
+  const warnedExecutors = new WeakSet()
   let disposed = false
-
   const enabled = () => {
     const field = config?.streamingToolExecution
     return typeof field?.get === 'function' ? field.get() === true : field === true
   }
-  const keyOf = (agentId, callId) => `${agentId ?? ''}\u0000${callId}`
 
-  /** Create one model step's speculative scheduler state. */
-  const createStep = (agent, turn, step, signal) => {
-    const controller = new AbortController()
-    return {
-      agent,
-      turn,
-      step,
-      signal,
-      controller,
-      attemptId: undefined,
-      execSignal: AbortSignal.any([signal, controller.signal]),
-      calls: [],
-      byId: new Map(),
-      inFlight: new Set(),
-      nextToStart: 0,
-      exclusive: false,
-      abandoned: false,
-    }
-  }
-
-  /** Cancel every outstanding speculative call in a step without committing results. */
-  const abandon = state => {
-    if (state.abandoned) return
+  function abandon(state) {
     state.abandoned = true
     state.controller.abort(new Error(ABANDON_ERROR))
-    for (const entry of state.calls) {
-      if (!entry.served) pending.delete(keyOf(state.agent.id, entry.block.id))
-    }
   }
 
-  /** Abandon and forget one agent's current step state. */
-  const retire = agentId => {
-    const state = steps.get(agentId)
-    if (state === undefined) return
+  async function drain(state) {
+    // The pump can still be waiting for an approval before publishing an outcome.
+    await state.pumping
+    await Promise.allSettled(state.calls.filter(entry => entry.started).map(entry => entry.outcome))
+  }
+
+  function retire(agent) {
+    const state = steps.get(agent)
+    if (!state) return draining.get(agent) ?? Promise.resolve()
+    steps.delete(agent)
+    state.signal.removeEventListener('abort', state.onAbort)
     abandon(state)
-    steps.delete(agentId)
+    const previous = draining.get(agent)
+    const work = Promise.allSettled([previous, drain(state)]).then(() => {})
+    draining.set(agent, work)
+    void work.finally(() => { if (draining.get(agent) === work) draining.delete(agent) })
+    return work
   }
 
-  /** Record one speculative execution's prepared/outcome promises. Idempotent. */
-  const startCall = (state, entry, exclusive) => {
-    if (entry.started) return
-    entry.started = true
-    let prepared
-    try {
-      prepared = Promise.resolve(originalPrepare(entry.input))
-    } catch (error) {
-      prepared = Promise.reject(error)
-    }
-    entry.prepared = prepared
-    const outcome = prepared.then(preparation => {
-      if (preparation?.kind !== 'dispatch') return preparation
-      return originalDispatch(preparation.exec)
-    })
-    // The loop only awaits this promise when it claims the call; keep an
-    // abandoned or failed speculation from surfacing as an unhandled rejection.
-    void outcome.catch(() => {})
-    entry.outcome = outcome
-    const tracked = outcome.then(
-      () => {},
-      error => { logger.warn(`streaming tool execution: speculative call failed: ${error}`) },
-    ).finally(() => {
-      state.inFlight.delete(entry)
-      if (exclusive) state.exclusive = false
-      pump(state)
-    })
-    state.inFlight.add(entry)
-    void tracked
-  }
-
-  /** Classify one offered call: only an exact `parallel` mode may overlap. */
-  const classify = entry => {
-    try {
-      return ctx.tools.executionMode(entry.input).kind !== 'parallel'
-    } catch (error) {
-      logger.warn(`streaming tool execution: executionMode failed for "${entry.block.name}": ${error}`)
-      return true
-    }
-  }
-
-  /** Start every offered call the current concurrency mode and pool permit. */
-  const pump = state => {
-    if (disposed || state.abandoned) return
-    while (state.nextToStart < state.calls.length) {
-      if (state.exclusive) return
-      const maxParallel = ctx.agentLoop.config.maxParallelToolCalls.get()
-      if (state.inFlight.size >= maxParallel) return
-      const entry = state.calls[state.nextToStart]
-      if (entry.started) {
-        // The loop claimed this call before the pool reached it.
-        state.nextToStart++
-        continue
+  function attachPipeline(executor) {
+    // Other executors own program bindings and restrictions. Leave their calls
+    // entirely with their provider instead of treating them as native calls.
+    if (executor.constructor?.name !== 'NativeToolExecutor') {
+      if (!warnedExecutors.has(executor)) {
+        warnedExecutors.add(executor)
+        logger.warn('streaming-tool-execution: selected executor is not NativeToolExecutor; using normal batch execution')
       }
-      const exclusive = classify(entry)
-      // An exclusive call waits for every earlier call, then runs alone.
-      if (exclusive && state.inFlight.size > 0) return
-      state.nextToStart++
-      startCall(state, entry, exclusive)
-      if (exclusive) {
-        state.exclusive = true
-        return
-      }
+      return undefined
     }
+    const pipeline = executor.pipeline
+    if (!pipeline || !['executionMode', 'prepare', 'dispatch', 'complete'].every(key => typeof pipeline[key] === 'function')) {
+      throw new Error('streaming-tool-execution: incompatible DSH 0.2.2-rc.1 NativeToolExecutor pipeline')
+    }
+    if (pipelines.has(pipeline)) return pipelines.get(pipeline)
+    const originalPrepare = pipeline.prepare
+    const originalDispatch = pipeline.dispatch
+    const preparedExecs = new WeakMap()
+    const record = { pipeline, originalPrepare, originalDispatch }
+    const prepare = async input => {
+      const state = steps.get(input.agent)
+      const entry = state?.byId.get(input.callId)
+      if (!state?.claiming || state.abandoned || state.record !== record || input.parent !== undefined
+        || input.toolSet !== state.toolSet || !entry?.started || entry.served
+        || entry.block.name !== input.name
+        || JSON.stringify(entry.input.arguments) !== JSON.stringify(input.arguments)) {
+        return originalPrepare.call(pipeline, input)
+      }
+      entry.served = true
+      const prepared = await entry.prepared
+      if (prepared.kind === 'dispatch') preparedExecs.set(prepared.exec, entry)
+      return prepared
+    }
+    const dispatch = exec => {
+      const entry = preparedExecs.get(exec)
+      if (!entry) return originalDispatch.call(pipeline, exec)
+      preparedExecs.delete(exec)
+      return entry.outcome
+    }
+    Object.assign(record, { prepare, dispatch })
+    pipeline.prepare = prepare
+    pipeline.dispatch = dispatch
+    pipelines.set(pipeline, record)
+    return record
   }
 
-  /** Offer one closed `tool-call` block from the live assistant stream. */
-  const offer = (state, block) => {
-    if (state.abandoned || state.byId.has(block.id) || state.signal.aborted) return
-    const entry = {
-      state,
-      block,
-      input: {
-        callId: block.id,
-        name: block.name,
-        arguments: parseArguments(block.arguments),
-        agent: state.agent,
-        signal: state.execSignal,
-      },
-      prepared: undefined,
-      outcome: undefined,
-      started: false,
-      served: false,
+  function pump(state) {
+    if (state.pumping || state.blocked || state.abandoned || state.claiming || disposed || !enabled()) return
+    state.pumping = (async () => {
+      while (!state.abandoned && !state.claiming && !disposed && enabled() && state.next < state.calls.length) {
+        const limit = ctx.agentLoop.config.maxParallelToolCalls.get()
+        if (!Number.isInteger(limit) || limit < 1 || state.inFlight.size >= limit) return
+        const entry = state.calls[state.next]
+        // An exclusive or invalid call is a hard boundary for speculation.
+        // It and every following call wait for the native model-ordered batch.
+        if (state.record.pipeline.executionMode(entry.input).kind !== 'parallel') {
+          state.blocked = true
+          return
+        }
+        state.next++
+        entry.started = true
+        const { pipeline, originalPrepare, originalDispatch } = state.record
+        entry.prepared = Promise.resolve().then(() => originalPrepare.call(pipeline, entry.input))
+        entry.outcome = entry.prepared.then(prepared => prepared.kind === 'dispatch'
+          ? originalDispatch.call(pipeline, prepared.exec) : prepared)
+        state.inFlight.add(entry)
+        void entry.outcome.catch(error => logger.warn(`streaming-tool-execution: speculative pipeline failed: ${error}`))
+          .finally(() => { state.inFlight.delete(entry); pump(state) })
+        // Policy gates remain ordered even while accepted bodies overlap.
+        await entry.prepared
+      }
+    })().catch(error => {
+      logger.warn(`streaming-tool-execution: speculative scheduling stopped: ${error}`)
+      abandon(state)
+    }).finally(() => {
+      state.pumping = undefined
+      // Settlements may have requested replenishment while the gate was awaited.
+      const limit = ctx.agentLoop.config.maxParallelToolCalls.get()
+      if (!state.blocked && !state.abandoned && !state.claiming && state.next < state.calls.length
+        && Number.isInteger(limit) && limit > 0 && state.inFlight.size < limit) pump(state)
+    })
+  }
+
+  const resolve = async function (context) {
+    // Resolve remains the host's single evaluation of conditional activation.
+    const toolSet = await originalResolve.call(this, context)
+    if (context.agent && !disposed) admissions.set(context.agent, { toolSet, signal: context.signal })
+    return toolSet
+  }
+
+  const execute = function (input) {
+    const run = async () => {
+      const state = steps.get(input.agent)
+      if (!state) return originalExecute.call(this, input)
+      // Service calls and nested work must not claim a model step's speculation.
+      if (input.log?.turn !== state.turn || input.log?.step !== state.step) return originalExecute.call(this, input)
+      const matches = input.toolSet === state.toolSet && tools.selectExecutor(input.agent) === state.executor
+        && state.calls.every(entry => input.calls.some(block => block.id === entry.block.id
+          && block.name === entry.block.name && block.arguments === entry.block.arguments))
+        && new Set(input.calls.map(block => block.id)).size === input.calls.length
+      if (!matches || state.abandoned) {
+        await retire(input.agent)
+        return originalExecute.call(this, input)
+      }
+      state.claiming = true
+      const onAbort = () => abandon(state)
+      input.signal.addEventListener('abort', onAbort, { once: true })
+      if (input.signal.aborted) onAbort()
+      try { return await originalExecute.call(this, { ...input,
+        signal: AbortSignal.any([input.signal, state.controller.signal]) }) }
+      finally {
+        input.signal.removeEventListener('abort', onAbort)
+        // Unclaimed calls (e.g. cancellation skips) must drain before batch return.
+        await retire(input.agent)
+      }
     }
+    const work = run()
+    batches.add(work)
+    void work.then(() => batches.delete(work), () => batches.delete(work))
+    return work
+  }
+
+  const onRequest = async (payload, next) => {
+    const { agent, turn, step, signal } = payload
+    if (!agent) return next()
+    await retire(agent)
+    if (!enabled() || disposed || signal.aborted) return next()
+    const admission = admissions.get(agent)
+    if (!admission || admission.signal !== signal) return next()
+    const executor = tools.selectExecutor(agent)
+    const record = attachPipeline(executor)
+    if (!record) return next()
+    const controller = new AbortController()
+    const state = { agent, turn, step, signal, executor, record, controller, toolSet: admission.toolSet,
+      execSignal: AbortSignal.any([signal, controller.signal]), calls: [], byId: new Map(),
+      inFlight: new Set(), next: 0, claiming: false, abandoned: false, blocked: false, pumping: undefined }
+    state.onAbort = () => abandon(state)
+    signal.addEventListener('abort', state.onAbort, { once: true })
+    steps.set(agent, state)
+    try { return await next() }
+    catch (error) { await retire(agent); throw error }
+  }
+
+  const onFrame = ({ agent, frame }) => {
+    const state = steps.get(agent)
+    if (!state || state.abandoned || disposed) return
+    if (frame.type === 'start') {
+      if (frame.turn === state.turn && frame.step === state.step) state.attemptId = frame.attemptId
+      return
+    }
+    if (state.attemptId === undefined || frame.attemptId !== state.attemptId) return
+    if (frame.type === 'end') {
+      if (frame.outcome.kind === 'abandoned' || frame.outcome.eventType === 'assistant/attempt') void retire(agent)
+      return
+    }
+    if (frame.type !== 'chunk') return
+    const chunk = frame.chunk
+    if (chunk.type === 'finish' && ['max-tokens', 'error', 'aborted'].includes(chunk.reason?.kind)) {
+      void retire(agent)
+      return
+    }
+    if (!enabled() || state.claiming || chunk.type !== 'block-end' || chunk.block?.type !== 'tool-call') return
+    const block = chunk.block
+    if (state.byId.has(block.id)) return
+    const entry = { block: structuredClone(block), started: false, served: false,
+      input: { callId: block.id, name: block.name, arguments: parseArguments(block.arguments),
+        agent, toolSet: state.toolSet, signal: state.execSignal } }
     state.calls.push(entry)
     state.byId.set(block.id, entry)
-    pending.set(keyOf(state.agent.id, block.id), entry)
     pump(state)
   }
 
-  /** The loop asks for the call: hand back its already-prepared execution. */
-  const prepare = input => {
-    const key = keyOf(input.agent?.id, input.callId)
-    const entry = pending.get(key)
-    if (entry === undefined || entry.served || entry.state.abandoned) return originalPrepare(input)
-    entry.served = true
-    pending.delete(key)
-    if (!entry.started) {
-      // The loop reached a call the pool had not started yet: the previous
-      // call kept the slot busy while the message settled. Start it now; the
-      // loop is already waiting for this prepare.
-      startCall(entry.state, entry, classify(entry))
-    }
-    return entry.prepared.then(preparation => {
-      if (preparation?.kind === 'dispatch') preparedExecs.set(preparation.exec, entry)
-      return preparation
-    })
-  }
-
-  /** The loop dispatches the call: return the outcome the speculative body produced. */
-  const dispatch = exec => {
-    const entry = preparedExecs.get(exec)
-    if (entry === undefined) return originalDispatch(exec)
-    preparedExecs.delete(exec)
-    return entry.outcome
-  }
-
-  const onRequest = (payload, next) => {
+  tools.resolve = resolve
+  tools.execute = execute
+  ctx.on('llm/stream', async function* (options, next) {
+    const state = [...steps.values()].find(value => value.agent.id === options.sessionId
+      && value.signal === options.signal)
+    let completed = false
     try {
-      const { agent, turn, step, signal } = payload
-      if (agent !== undefined) {
-        // A new step, or a retry of the same step after a failed attempt:
-        // earlier speculation can no longer commit.
-        retire(agent.id)
-        steps.set(agent.id, createStep(agent, turn, step, signal))
+      yield* next()
+      completed = true
+    } finally {
+      // An aborted/error stream otherwise reaches the loop's idle notification
+      // synchronously. Join cooperative tool cleanup at the stream boundary.
+      if (state && (!completed || state.abandoned || state.signal.aborted)) {
+        if (steps.get(state.agent) === state) await retire(state.agent)
+        else await drain(state)
       }
-    } catch (error) {
-      logger.warn(`streaming tool execution: step bookkeeping failed: ${error}`)
     }
-    return next()
-  }
-
-  const onFrame = payload => {
-    if (!enabled() || disposed) return
-    try {
-      const { agent, frame } = payload
-      if (agent === undefined) return
-      const state = steps.get(agent.id)
-      if (state === undefined) return
-      if (frame?.type === 'start') {
-        // Chunk frames carry no turn/step; the attempt start binds them.
-        state.attemptId = frame.attemptId
-        return
-      }
-      if (frame?.type === 'end') {
-        // An abandoned attempt committed no message, so its speculation can
-        // never be claimed; the loop retries or closes the step.
-        if (frame.outcome?.kind === 'abandoned') abandon(state)
-        return
-      }
-      if (frame?.type !== 'chunk') return
-      if (state.attemptId !== undefined && state.attemptId !== frame.attemptId) return
-      const chunk = frame.chunk
-      if (chunk?.type !== 'block-end' || chunk.block?.type !== 'tool-call') return
-      offer(state, chunk.block)
-    } catch (error) {
-      logger.warn(`streaming tool execution: speculative start failed: ${error}`)
-    }
-  }
-
-  const onStatus = payload => {
-    if (payload?.status === 'idle' && payload.agent !== undefined) retire(payload.agent.id)
-  }
-
-  const onDisposed = payload => {
-    if (payload?.agent !== undefined) retire(payload.agent.id)
-  }
-
-  scheduler.prepare = prepare
-  scheduler.dispatch = dispatch
+  })
   ctx.on('agent/request', onRequest)
   ctx.on('agent/assistant-stream', onFrame)
-  ctx.on('agent/status', onStatus)
-  ctx.on('agent/disposed', onDisposed)
-
-  ctx.effect(() => () => {
+  ctx.on('agent/turn-stopping', ({ agent }) => retire(agent))
+  ctx.on('agent/status', ({ agent, status }) => { if (status === 'idle') void retire(agent) })
+  ctx.on('agent/disposed', ({ agent }) => { void retire(agent); admissions.delete(agent) })
+  ctx.effect(() => async () => {
     disposed = true
-    for (const agentId of [...steps.keys()]) retire(agentId)
-    if (scheduler.prepare === prepare) scheduler.prepare = originalPrepare
-    if (scheduler.dispatch === dispatch) scheduler.dispatch = originalDispatch
+    for (const agent of [...steps.keys()]) void retire(agent)
+    await Promise.allSettled([...batches, ...draining.values()])
+    // Cordis returns context-bound method proxies, so compare raw descriptors.
+    for (const [key, wrapper, descriptor] of [
+      ['resolve', resolve, resolveDescriptor], ['execute', execute, executeDescriptor],
+    ]) {
+      if (Object.getOwnPropertyDescriptor(tools, key)?.value !== wrapper) continue
+      if (descriptor) Object.defineProperty(tools, key, descriptor)
+      else delete tools[key]
+    }
+    for (const record of pipelines.values()) {
+      if (record.pipeline.prepare === record.prepare) record.pipeline.prepare = record.originalPrepare
+      if (record.pipeline.dispatch === record.dispatch) record.pipeline.dispatch = record.originalDispatch
+    }
+    if (tools[OWNER] === owner) delete tools[OWNER]
   })
 }

@@ -1,38 +1,37 @@
 # 流式工具执行
 
-> MindAgent 说明：MindAgent 的 DSH 镜像已内置本 bundle，那边只需看镜像构建目录的
-> `STREAMING-TOOL-EXECUTION.md`；其它 DSH 0.2.0-rc.2 环境按下文「安装」一节装即可。
+本分支适配 DSH 0.2.2-rc.1。使用 MindAgent 镜像时，请先核对镜像中的 DSH 版本。
 
-面向 **DSH 0.2.0-rc.2** 的 DeepSeek Harness 配置插件：并行安全的工具调用在模型流中的
+面向 **DSH 0.2.2-rc.1** 的 DeepSeek Harness 配置插件：并行安全的工具调用在模型流中的
 `tool-call` 块一闭合就立即开始，而不是等待 assistant message 结算；工具执行体与剩余的
 模型解码过程重叠。
 
 本插件是 agent-loop 变更
 `feat(agent-loop): execute parallel-safe tool calls while streaming`
 （`Te-ddybear/deepseek-harness@de079108d2dcbef687ab6457b2bb7987fb67d292`）的插件化移植，面向
-0.2.0-rc.2 运行时。
+0.2.2-rc.1 运行时。
 
 > 本地改动：本副本不 import 任何 host 包，因此可以从 profile 安装直接加载；与上游的差异见
 > `NOTICE`。
 
 ## 兼容性
 
-- **仅支持 DSH 0.2.0-rc.2。** 插件包装 0.2.0-rc.2 `dsh-agent-loop` 内部
-  `TOOL_RUNTIME_SCHEDULER` 分阶段工具流水线的 `prepare` / `dispatch`。DSH 0.2.1 及之后把
-  工具批次迁移到 `ToolExecutor` API，因此插件在这些版本上激活即报错；请勿把这些 profile 配进来。
-- 无运行时依赖，也不 import 任何 host 包：调度器符号在 `tools` 服务上按描述
-  `@deepseek-ai/dsh-tools.scheduler` 查找，因此装进 profile 的副本无需安装锚点即可加载。
-  `peerDependencies` 已把 `@deepseek-ai/dsh` 钉在 `0.2.0-rc.2`，版本不符时 DSH 会拒绝安装，
-  除非显式 `dsh plugin allow-version … --accept-risk` 放行。
+- 支持 **DSH 0.2.2-rc.1** 和 Node.js 22+。插件保留该步骤已解析的工具准入集合，
+  包装所选 NativeToolExecutor 的工具执行管线。
+- 版本相关接入点为 ToolsService.resolve、execute、selectExecutor，以及
+  NativeToolExecutor.pipeline。复用 prepare 和 dispatch 的结果，由原生 complete
+  和 executeToolBatch 完成按序提交。
+- 其他执行器继续使用其正常批处理行为，并输出跳过流式加速的诊断。
+- 运行模块保持零 host import、零运行时依赖，DSH peer 和 engines 均锁定 0.2.2-rc.1。
 
 ## 行为
 
 - 并行安全的调用（`isConcurrencySafe(args) === true`）在模型流仍打开时就开始，并发上限为
   profile 的 `maxParallelToolCalls`。
-- 独占调用仍是排序屏障：它们等待更早的调用，后续调用等待它们。
-- 结果仍然在 assistant message **之后**按模型顺序通过循环自身的 `finalize` / `finish`
-  提交。因此持久 `tool/call` 事件仍写在 `assistant/message` 之后，与未启用插件时一致。核心
-  Harness 变更会提前写 `tool/call` 并增加会话修复容错；本插件不提前写会话状态，因此两者都不需要。
+- 独占调用以及其后的调用等待模型消息结算，再进入原生批处理。提前启动限于并行安全调用。
+- 结果在 assistant message 之后，经过原生执行器的 complete 和 executeToolBatch 按模型
+  顺序提交，保留 tool/call 和 tool/result 的原有日志顺序。
+- 条件工具继承该步骤一次性解析的 toolSet，提前执行也遵守相同的准入结果。
 - `tools/pre-execute` 策略、守卫与审批在推测调用开始时运行；`tools/post-execute` 与
   `tools/result` 仍在循环提交该调用时各运行一次。
 - 以下情况会放弃推测且不提交结果：尝试失败或被放弃、步骤结束但未消费该调用（例如输出 token
@@ -85,33 +84,36 @@
 
 ## 验证
 
-在隔离的 `@deepseek-ai/dsh@0.2.0-rc.2` 安装上，用脚本化 mock adapter 在 Cordis 层验证：
+在真实的 0.2.2-rc.1 AgentLoop 上使用脚本化模型适配器运行测试。
 
-- 并行安全工具在流被 gate 住时、`assistant/message` 之前启动，且执行体只运行一次；
-- 关闭插件时工具只在 message 结算后启动；
-- 两个并行调用都重叠解码，并按模型顺序提交；
-- 独占调用会把后续调用挡在屏障之后；
-- `max-tokens` 会启动执行体，随后带中止信号放弃且不提交结果；
-- 失败尝试会放弃其执行体，重试可正常完成；
-- `tools/pre-execute`、`tools/execute`、`tools/post-execute`、`tools/result` 每次调用各运行一次；
-- 卸载插件会恢复原始调度阶段；
-- bundle 能通过 0.2.0-rc.2 Cordis loader 加载，组合后的 0.2.0-rc.2 profile 能显示插入的行。
+```sh
+npm ci --ignore-scripts
+npm run check
+```
 
-另在 stock `@deepseek-ai/dsh@0.2.0-rc.2` 安装上实测：`dsh plugin --profile web add` 成功，
-装进 profile 的副本在解不到任何 host 包的前提下 import 通过，脚本化调度器验证了推测启动、
-认领不重跑、卸载还原三个阶段。
+测试覆盖提前执行、关闭插件、单次执行、策略和结果按序提交、独占屏障、并发上限、
+条件工具准入、守卫与审批拒绝、token 上限、取消清理、复用调用 ID 的失败重试，
+以及流式阶段和原生批处理期间卸载。
 
-尚未在 0.2.0-rc.2 浏览器会话中对插件清单卡片做视觉验证；标题与描述均已提供。本包
-不提供图标，插件清单界面预期使用其默认图标。
+安装检查会打包插件，在独立临时 Web profile 中安装、核对配置合成，并导入脱离 host
+依赖目录的模块副本。传入本机已安装的 DSH CLI 入口路径即可运行。
+
+```sh
+npm run check:install -- /absolute/path/to/@deepseek-ai/dsh/lib/bin.js
+```
+
+真实模型的性能收益和浏览器插件清单卡片仍需现场验证。本包提供本地化标题与描述。
 
 ## 限制
 
-- 插件修改 DSH 放在内部 `TOOL_RUNTIME_SCHEDULER` 符号下的调度对象，该符号按描述
-  `@deepseek-ai/dsh-tools.scheduler` 发现。卸载时会恢复原始方法，但若重建改了符号名或该
-  内部对象，激活时会直接报错（不再静默）。
-- 并行安全分类来自每个工具的 `isConcurrencySafe`；没有按工具的白名单。
-- 假设每个 agent 同时只有一个模型步骤（agent loop 对单个 agent 是串行的）。
-- 放弃只能停止协作式工作，无法强制终止忽略 `exec.signal` 的执行体。
+- 本版依赖上述内部执行器查找和管线字段，启动时检查方法形状，并锁定支持的 DSH 版本。
+  升级 host 时需要重新运行兼容性测试。
+- 并行安全分类来自工具的 isConcurrencySafe 声明。
+- 按原生循环约定，每个 Agent 同时运行一个模型步骤。
+- 取消与卸载会等待协作式任务清理，忽略 abort signal 的工具可能延迟退出。
+  已发生的推测性副作用仍然保留。
+- npm audit 在锁定的 DSH 开发依赖链中报告 Zod 告警。插件发布包为零运行时依赖，
+  host 依赖修复需结合部署所选的 DSH 版本处理。
 
 ## 许可证
 

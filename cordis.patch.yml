@@ -1,4 +1,4 @@
-# Streaming tool execution for DSH 0.2.0-rc.2.
+# Streaming tool execution for DSH 0.2.2-rc.1.
 #
 # The row starts parallel-safe tool calls while the assistant stream is still
 # open. Set `streamingToolExecution: false` to fall back to the stock behavior

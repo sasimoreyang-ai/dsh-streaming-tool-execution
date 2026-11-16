@@ -1,11 +1,9 @@
 # Streaming tool execution
 
-> MindAgent note: MindAgent's DSH images already ship this bundle, so there you
-> only need the image's `STREAMING-TOOL-EXECUTION.md` for wiring and
-> verification. In any other DSH 0.2.0-rc.2 installation, install it with the
-> steps under [Install](#install).
+This branch targets DSH 0.2.2-rc.1. Check the runtime version in any packaged
+MindAgent image before selecting this bundle.
 
-A DeepSeek Harness profile plugin for **DSH 0.2.0-rc.2** that starts
+A DeepSeek Harness profile plugin for **DSH 0.2.2-rc.1** that starts
 parallel-safe tool calls as soon as their `tool-call` block closes in the
 assistant stream, instead of waiting for the assistant message to settle. The
 tool body then overlaps the rest of the model decode.
@@ -13,36 +11,34 @@ tool body then overlaps the rest of the model decode.
 This is a plugin port of the agent-loop change
 `feat(agent-loop): execute parallel-safe tool calls while streaming`
 (`Te-ddybear/deepseek-harness@de079108d2dcbef687ab6457b2bb7987fb67d292`), built for the
-0.2.0-rc.2 runtime without patching the shipped packages.
+0.2.2-rc.1 runtime without patching the shipped packages.
 
 > Local modification: this copy imports no host package, so it loads from a
 > profile installation. See `NOTICE` for the exact difference from upstream.
 
 ## Compatibility
 
-- **DSH 0.2.0-rc.2 only.** The plugin wraps the internal
-  `TOOL_RUNTIME_SCHEDULER` staged tool pipeline (`prepare` / `dispatch`) of the
-  0.2.0-rc.2 `dsh-agent-loop`. DSH 0.2.1 and later moved tool batches to the
-  `ToolExecutor` API, where the pipeline this plugin wraps no longer exists, so
-  activation fails there; keep it out of those profiles.
-- No runtime dependencies and no host imports: the scheduler symbol is found by
-  its description on the `tools` service instead of importing
-  `@deepseek-ai/dsh-tools`, so a copy installed into a profile loads without a
-  package anchor. `peerDependencies` pins `@deepseek-ai/dsh` to `0.2.0-rc.2`, so
-  DSH refuses a mismatched installation unless an explicit
-  `dsh plugin allow-version … --accept-risk` exemption is granted.
+- **DSH 0.2.2-rc.1**, Node.js 22 or newer. The plugin observes the step's
+  resolved tool admission and wraps the selected NativeToolExecutor pipeline.
+- The version-specific hooks are ToolsService.resolve / execute / selectExecutor
+  and NativeToolExecutor.pipeline. Native prepare and dispatch are reused, and
+  complete plus executeToolBatch remain responsible for ordered settlement.
+- Other executors retain their normal batch behavior and produce a diagnostic
+  when streaming acceleration is skipped.
+- The runtime module has no host imports or runtime dependencies. The optional
+  DSH peer and engines field pin the supported host to 0.2.2-rc.1.
 
 ## Behavior
 
 - A parallel-safe call (`isConcurrencySafe(args) === true`) starts while the
   model stream is still open, up to the profile's `maxParallelToolCalls`.
-- Exclusive calls remain ordering barriers: they wait for earlier calls and
-  later calls wait for them.
-- Results still commit in model order **after** the assistant message, through
-  the loop's own `finalize` / `finish` stages. The durable `tool/call` event is
-  therefore written after `assistant/message`, exactly as without the plugin.
-  The core Harness change logs `tool/call` early and adds a session-repair
-  tolerance; this plugin avoids both by not writing session state early.
+- Exclusive calls and every following call wait for the normal batch after the
+  assistant message settles. Only parallel-safe calls start speculatively.
+- Results commit in model order after the assistant message, through the
+  Native executor's complete stage and executeToolBatch. Durable tool/call
+  and tool/result events keep their original ordering.
+- Conditional tools retain the exact toolSet resolved once for that step.
+
 - `tools/pre-execute` policy, guards, and approval run when the speculative call
   starts; `tools/post-execute` and `tools/result` still run exactly once when
   the loop commits the call.
@@ -71,7 +67,7 @@ The package is a DSH bundle: `package.json` declares `dsh.bundle.patch`, and
    `mindagent-dsh-streaming-tool-execution` to `dsh.profile.bundles` in the
    profile's `package.json`.
 3. The inserted row is enabled with `streamingToolExecution: true`; the plugin
-   activates after `tools` and `agentLoop` are available.
+   activates after `tools`, `agentLoop` and `llm` are available.
 
 No second installation into the DSH package is required. The MindAgent image
 additionally installs the package inside its DSH installation; that is a build
@@ -105,44 +101,40 @@ profile's `cordis.patch.yml`:
 
 ## Verification
 
-Verified against an isolated `@deepseek-ai/dsh@0.2.0-rc.2` installation with
-scripted mock adapters at the Cordis level:
+Run the real 0.2.2-rc.1 AgentLoop tests with scripted adapters locally.
 
-- a parallel-safe tool starts while the stream is gated, before
-  `assistant/message`, and the body runs exactly once;
-- with the plugin disabled the tool starts only after the message settles;
-- two parallel calls both overlap decode and commit in model order;
-- an exclusive call keeps a later call behind its barrier;
-- `max-tokens` starts the body and then abandons it with an abort signal and no
-  committed result;
-- a failed attempt abandons its body and a retry succeeds cleanly;
-- `tools/pre-execute`, `tools/execute`, `tools/post-execute`, and `tools/result`
-  each run once per call;
-- unloading the plugin restores the original scheduler stages;
-- the bundle loads through the 0.2.0-rc.2 Cordis loader, and a composed
-  0.2.0-rc.2 profile shows the inserted row.
+```sh
+npm ci --ignore-scripts
+npm run check
+```
 
-Additionally verified against a stock `@deepseek-ai/dsh@0.2.0-rc.2` install:
-`dsh plugin --profile web add` succeeds, the installed copy imports with no host
-package resolvable, a scripted scheduler shows the speculative start, claiming
-the call does not re-run its body, and unloading restores the stages.
+The tests cover streaming overlap, disabled behavior, single execution, ordered
+policy and result stages, exclusive barriers, concurrency limits, conditional
+tool admission, guard/approval denial, token ceilings, cancellation, retry with
+reused call IDs, and unloading during both streaming and native batch execution.
 
-The plugin row's rendered plugin-inventory card was not visually verified in a
-0.2.0-rc.2 browser session; title and description are provided. This package
-intentionally ships no icon, so the inventory UI should use its default icon.
+An isolated CLI installation check packs the bundle, installs it into a temporary
+Web profile, verifies composition, and imports a detached copy of the module.
+
+```sh
+npm run check:install -- /absolute/path/to/@deepseek-ai/dsh/lib/bin.js
+```
+
+Real-provider performance and the browser inventory card still need deployment
+validation. The package supplies localized titles and descriptions.
 
 ## Limits
 
-- The plugin patches the scheduler object DSH keeps under its internal
-  `TOOL_RUNTIME_SCHEDULER` symbol, found by the symbol's description
-  `@deepseek-ai/dsh-tools.scheduler`. It restores the original methods on
-  unload, but a rebuild that renames the symbol or changes that internal object
-  makes activation fail loudly.
-- Parallel-safe classification comes from each tool's `isConcurrencySafe`;
-  there is no per-tool allowlist.
-- One model step per agent is assumed (the agent loop is serial per agent).
-- Abandoning speculation stops cooperative work; it cannot hard-kill a body
-  that ignores `exec.signal`.
+- This version relies on the internal native executor lookup and pipeline fields
+  listed above. Method shapes are checked and supported versions are pinned.
+  Re-run compatibility tests when upgrading the host.
+- Safety classification comes from each tool's isConcurrencySafe declaration.
+- One model step per Agent is assumed, as in the stock loop.
+- Cancellation and unloading join cooperative work. A tool that ignores its
+  abort signal can delay teardown. Speculative side effects remain observable.
+- npm audit reports a Zod advisory through the exact pinned DSH development
+  dependency graph. This plugin ships zero runtime dependencies. Host dependency
+  remediation belongs to the DSH deployment's version selection.
 
 ## License
 

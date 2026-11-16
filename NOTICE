@@ -1,31 +1,23 @@
-Streaming tool execution for DSH 0.2.0-rc.2
+Streaming tool execution for DSH 0.2.2-rc.1
 
-This source is vendored from @teddybear/dsh-streaming-tool-execution 0.2.0-rc.2
-(MIT, Copyright (c) 2026 Te-ddybear).
-
-It is a plugin port of the agent-loop change
+This package originated from @teddybear/dsh-streaming-tool-execution 0.2.0-rc.2
+(MIT, Copyright (c) 2026 Te-ddybear), a plugin port of
 "feat(agent-loop): execute parallel-safe tool calls while streaming":
 Te-ddybear/deepseek-harness@de079108d2dcbef687ab6457b2bb7987fb67d292
 
-The platform-local package is named mindagent-dsh-streaming-tool-execution.
-Local changes: the package name, a repository field, a `peerDependencies` entry
-pinning `@deepseek-ai/dsh` to 0.2.0-rc.2 (so DSH refuses a mismatched install
-unless an explicit risk exemption is granted), and adding this NOTICE to the
-`files` list so provenance travels with the packed tarball.
+The package retains the name mindagent-dsh-streaming-tool-execution.
+The earlier MindAgent adaptation removed bare host imports and used the
+0.2.0-rc.2 scheduler symbol. This branch replaces that integration for
+0.2.2-rc.1 with ToolsService admission/batch interception and the selected
+NativeToolExecutor pipeline. It preserves ordered policy and native completion,
+blocks speculative execution at exclusive calls, and drains abandoned work.
+Non-native executors retain their normal behavior.
 
-One runtime change is applied on top of upstream. Upstream imports
-`@deepseek-ai/dsh-tools` and `@deepseek-ai/schemastery` by bare specifier and
-exports a schemastery `Config`. A copy installed into a profile cannot resolve
-those packages, so it failed to import with ERR_MODULE_NOT_FOUND unless it was
-also installed inside the DSH installation itself. This copy imports nothing
-from the host: it finds the scheduler symbol by its description
-`@deepseek-ai/dsh-tools.scheduler` on the `tools` service, and reads
-`streamingToolExecution` as a plain boolean instead of a schemastery schema
-(no defaulting and no volatile remount semantics). Installation into the image
-and the build-time checks are maintained in MindAgent-Platform.
+The runtime module still imports no host package and reads its boolean config
+directly. Tests use exact published DSH development packages. Package metadata,
+localized documentation and installation checks describe the new host contract.
 
-The full MIT license text follows so the required copyright and permission
-notice travel with the package; the standalone LICENSE file is not shipped.
+The original copyright and license are retained below.
 
 MIT License
 

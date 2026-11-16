@@ -1,11 +1,10 @@
 {
   "name": "mindagent-dsh-streaming-tool-execution",
-  "version": "0.2.0-rc.2",
-  "description": "Starts parallel-safe tool calls as soon as their model block closes, overlapping tool execution with the rest of the model stream (DSH 0.2.0-rc.2).",
+  "version": "0.2.2-rc.1",
+  "description": "Overlaps parallel-safe native tool calls with model streaming for DSH 0.2.2-rc.1.",
   "repository": {
     "type": "git",
-    "url": "https://gitcode.com/Ascend/MindAgent-Platform.git",
-    "directory": "MindAgent-Exec/agents/dsh-build/plugin-streaming-tool-execution"
+    "url": "https://github.com/sasimoreyang-ai/dsh-streaming-tool-execution.git"
   },
   "keywords": [
     "dsh",
@@ -16,7 +15,7 @@
   ],
   "license": "MIT",
   "peerDependencies": {
-    "@deepseek-ai/dsh": "0.2.0-rc.2"
+    "@deepseek-ai/dsh": "0.2.2-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {
@@ -38,11 +37,26 @@
     "NOTICE"
   ],
   "engines": {
-    "dsh": "0.2.0-rc.2"
+    "node": ">=22",
+    "dsh": "0.2.2-rc.1"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-agent-loop": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-agent-loop-testkit": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-scope": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm test && npm pack --dry-run",
+    "check:install": "node scripts/check-install.mjs"
   }
 }
