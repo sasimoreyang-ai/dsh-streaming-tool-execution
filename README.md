@@ -146,5 +146,4 @@ intentionally ships no icon, so the inventory UI should use its default icon.
 
 ## License
 
-MIT. See `LICENSE` for the license text and `NOTICE` for provenance and the
-local modifications relative to upstream.
+MIT.
