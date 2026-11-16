@@ -73,10 +73,9 @@ export function apply(ctx, config) {
   const preparedExecs = new WeakMap()
   let disposed = false
 
-  const enabled = () => {
-    const field = config?.streamingToolExecution
-    return typeof field?.get === 'function' ? field.get() === true : field === true
-  }
+  // The row config is the plain object from the profile patch: no schema, no
+  // `volatile()` getter. Anything that is not exactly `true` keeps it off.
+  const enabled = () => config?.streamingToolExecution === true
   const keyOf = (agentId, callId) => `${agentId ?? ''}\u0000${callId}`
 
   /** Create one model step's speculative scheduler state. */

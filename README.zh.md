@@ -1,7 +1,7 @@
 # 流式工具执行
 
-> MindAgent 说明：本 bundle 随 MindAgent DSH 源镜像构建并默认启用，不要在插件市场中重复安装；
-> 接线与验收见镜像构建目录的 `STREAMING-TOOL-EXECUTION.md`。
+> MindAgent 说明：MindAgent 的 DSH 镜像已内置本 bundle，那边只需看镜像构建目录的
+> `STREAMING-TOOL-EXECUTION.md`；其它 DSH 0.2.0-rc.2 环境按下文「安装」一节装即可。
 
 面向 **DSH 0.2.0-rc.2** 的 DeepSeek Harness 配置插件：并行安全的工具调用在模型流中的
 `tool-call` 块一闭合就立即开始，而不是等待 assistant message 结算；工具执行体与剩余的

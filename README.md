@@ -1,8 +1,9 @@
 # Streaming tool execution
 
-> MindAgent note: this bundle is built into the MindAgent DSH source image and
-> enabled by default. Do not install it again from the plugin market; see the
-> image's `STREAMING-TOOL-EXECUTION.md` for wiring and verification.
+> MindAgent note: MindAgent's DSH images already ship this bundle, so there you
+> only need the image's `STREAMING-TOOL-EXECUTION.md` for wiring and
+> verification. In any other DSH 0.2.0-rc.2 installation, install it with the
+> steps under [Install](#install).
 
 A DeepSeek Harness profile plugin for **DSH 0.2.0-rc.2** that starts
 parallel-safe tool calls as soon as their `tool-call` block closes in the
@@ -145,4 +146,5 @@ intentionally ships no icon, so the inventory UI should use its default icon.
 
 ## License
 
-MIT.
+MIT. See `LICENSE` for the license text and `NOTICE` for provenance and the
+local modifications relative to upstream.
