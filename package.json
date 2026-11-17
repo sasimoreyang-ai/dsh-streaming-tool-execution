@@ -60,6 +60,7 @@
     "bench": "node bench/run.mjs latency",
     "bench:concurrency": "node bench/run.mjs concurrency",
     "bench:control": "node bench/run.mjs control",
+    "bench:realistic": "node bench/realistic.mjs",
     "bench:analyze": "node bench/analyze.mjs bench/out",
     "bench:all": "node bench/run.mjs latency && node bench/run.mjs concurrency && node bench/run.mjs control && node bench/analyze.mjs bench/out",
     "check:install": "node scripts/check-install.mjs"
