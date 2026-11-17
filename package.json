@@ -57,6 +57,11 @@
   "scripts": {
     "test": "node --test tests/*.test.mjs",
     "check": "npm test && npm pack --dry-run",
+    "bench": "node bench/run.mjs latency",
+    "bench:concurrency": "node bench/run.mjs concurrency",
+    "bench:control": "node bench/run.mjs control",
+    "bench:analyze": "node bench/analyze.mjs bench/out",
+    "bench:all": "node bench/run.mjs latency && node bench/run.mjs concurrency && node bench/run.mjs control && node bench/analyze.mjs bench/out",
     "check:install": "node scripts/check-install.mjs"
   }
 }
