@@ -262,7 +262,14 @@ export function apply(ctx, config) {
   ctx.on('agent/disposed', ({ agent }) => { void retire(agent); admissions.delete(agent) })
   ctx.effect(() => async () => {
     disposed = true
-    for (const agent of [...steps.keys()]) void retire(agent)
+    for (const [agent, state] of [...steps]) {
+      // Restoring native execution discards unclaimed outcomes. Cancel just the
+      // affected turn before restoring, so its committed batch cannot replay them.
+      if (!state.claiming && state.calls.some(entry => entry.started)) {
+        agent.cancel({ kind: 'hook', reason: 'streaming tool executor unloaded before batch commit' })
+      }
+      void retire(agent)
+    }
     await Promise.allSettled([...batches, ...draining.values()])
     // Cordis returns context-bound method proxies, so compare raw descriptors.
     for (const [key, wrapper, descriptor] of [
