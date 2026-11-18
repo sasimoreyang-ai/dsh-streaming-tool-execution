@@ -94,7 +94,7 @@ export function apply(ctx, config) {
       byId: new Map(),
       inFlight: new Set(),
       nextToStart: 0,
-      exclusive: false,
+      blocked: false,
       abandoned: false,
     }
   }
@@ -118,7 +118,7 @@ export function apply(ctx, config) {
   }
 
   /** Record one speculative execution's prepared/outcome promises. Idempotent. */
-  const startCall = (state, entry, exclusive) => {
+  const startCall = (state, entry) => {
     if (entry.started) return
     entry.started = true
     let prepared
@@ -141,7 +141,6 @@ export function apply(ctx, config) {
       error => { logger.warn(`streaming tool execution: speculative call failed: ${error}`) },
     ).finally(() => {
       state.inFlight.delete(entry)
-      if (exclusive) state.exclusive = false
       pump(state)
     })
     state.inFlight.add(entry)
@@ -162,7 +161,7 @@ export function apply(ctx, config) {
   const pump = state => {
     if (disposed || state.abandoned) return
     while (state.nextToStart < state.calls.length) {
-      if (state.exclusive) return
+      if (state.blocked) return
       const maxParallel = ctx.agentLoop.config.maxParallelToolCalls.get()
       if (state.inFlight.size >= maxParallel) return
       const entry = state.calls[state.nextToStart]
@@ -171,15 +170,10 @@ export function apply(ctx, config) {
         state.nextToStart++
         continue
       }
-      const exclusive = classify(entry)
-      // An exclusive call waits for every earlier call, then runs alone.
-      if (exclusive && state.inFlight.size > 0) return
+      // Keep this call and its suffix with the host after the first barrier.
+      if (classify(entry)) { state.blocked = true; return }
       state.nextToStart++
-      startCall(state, entry, exclusive)
-      if (exclusive) {
-        state.exclusive = true
-        return
-      }
+      startCall(state, entry)
     }
   }
 
@@ -215,10 +209,9 @@ export function apply(ctx, config) {
     entry.served = true
     pending.delete(key)
     if (!entry.started) {
-      // The loop reached a call the pool had not started yet: the previous
-      // call kept the slot busy while the message settled. Start it now; the
-      // loop is already waiting for this prepare.
-      startCall(entry.state, entry, classify(entry))
+      // The native scheduler now owns this call, including its dispatch timing.
+      entry.state.blocked = true
+      return originalPrepare(input)
     }
     return entry.prepared.then(preparation => {
       if (preparation?.kind === 'dispatch') preparedExecs.set(preparation.exec, entry)
