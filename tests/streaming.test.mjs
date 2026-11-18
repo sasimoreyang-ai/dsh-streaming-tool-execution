@@ -395,3 +395,20 @@ test('approval without an approval channel denies early execution', { timeout: 5
   assert.deepEqual(h.errors, [])
   assert.equal(h.events.find(e => e.type === 'tool/result').data.message.isError, true)
 })
+
+
+test('unload after speculative dispatch and before normal stream finish never replays the body', { timeout: 5000 }, async t => {
+  let gate
+  const h = await setup(t, async function* () { yield* call(); await gate.promise; yield finish('tool-calls') })
+  gate = h.gate()
+  const started = h.gate()
+  let calls = 0
+  h.register('read_fixture', async () => { calls++; started.resolve(); return 'ok' })
+  const idle = h.run()
+  await started.promise
+  await h.fork.dispose()
+  gate.resolve()
+  await idle
+  assert.equal(calls, 1)
+  assert.deepEqual(h.errors, [])
+})
